@@ -2,8 +2,7 @@
 
 A classic Wolfenstein/Doom-style 3-D FPS built entirely in vanilla JavaScript and HTML5 Canvas — no dependencies, no build step, just open and play.
 
-![screenshot placeholder](screenshot.png)
-> *Screenshot coming soon — open `index.html` and take one!*
+![screenshot placeholder](screenshot.gif)
 
 ---
 
