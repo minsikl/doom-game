@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Doom-Style Raycaster</title>
+  <style>
+    /* ── Reset & layout ──────────────────────────────────────────────────── */
+    *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+
+    body {
+      background: #0a0a0a;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+      font-family: 'Courier New', Courier, monospace;
+      color: #ccc;
+      overflow: hidden;
+    }
+
+    /* ── Canvas ──────────────────────────────────────────────────────────── */
+    #gameCanvas {
+      display: block;
+      cursor: none;           /* hide cursor while playing */
+      outline: none;
+      border: 2px solid #333;
+      /* Nearest-neighbour scaling keeps pixels crisp if the canvas is
+         displayed at a non-native size via CSS. */
+      image-rendering: pixelated;
+    }
+
+    /* ── Overlay (instructions + start prompt) ───────────────────────────── */
+    #overlay {
+      position: fixed;
+      inset: 0;
+      display: none;          /* shown by game.js after init */
+      align-items: center;
+      justify-content: center;
+      pointer-events: none;   /* let clicks pass through to the canvas */
+      z-index: 10;
+    }
+
+    #overlay-box {
+      background: rgba(0, 0, 0, 0.82);
+      border: 1px solid #444;
+      padding: 28px 40px 24px;
+      text-align: center;
+      max-width: 380px;
+    }
+
+    #overlay-box h1 {
+      color: #cc2200;
+      font-size: 1.6rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      margin-bottom: 18px;
+    }
+
+    #overlay-box table {
+      border-collapse: collapse;
+      margin: 0 auto 18px;
+      width: 100%;
+    }
+
+    #overlay-box td {
+      padding: 4px 12px;
+      text-align: left;
+    }
+
+    #overlay-box td:first-child {
+      color: #ffcc00;
+      text-align: right;
+      font-weight: bold;
+      white-space: nowrap;
+      width: 45%;
+    }
+
+    #overlay-box .hint {
+      color: #888;
+      font-size: 0.82rem;
+      border-top: 1px solid #333;
+      padding-top: 14px;
+    }
+
+    #overlay-box .click-prompt {
+      color: #ff6644;
+      font-size: 0.95rem;
+      margin-top: 8px;
+      animation: blink 1.2s step-start infinite;
+    }
+
+    @keyframes blink {
+      50% { opacity: 0; }
+    }
+  </style>
+</head>
+<body>
+
+  <canvas id="gameCanvas"></canvas>
+
+  <!-- ── Instructions overlay ────────────────────────────────────────────── -->
+  <div id="overlay">
+    <div id="overlay-box">
+      <h1>⚡ Raycaster ⚡</h1>
+      <table>
+        <tr><td>W / ↑</td>        <td>Move forward</td></tr>
+        <tr><td>S / ↓</td>        <td>Move backward</td></tr>
+        <tr><td>A / D</td>        <td>Strafe left / right</td></tr>
+        <tr><td>← / →</td>        <td>Turn left / right</td></tr>
+        <tr><td>Mouse</td>        <td>Look (after click)</td></tr>
+      </table>
+      <p class="click-prompt">▶ Click to play</p>
+      <p class="hint">Press Esc to release the mouse</p>
+    </div>
+  </div>
+
+  <!-- ── Scripts — load in dependency order ──────────────────────────────── -->
+  <script src="map.js"></script>
+  <script src="player.js"></script>
+  <script src="renderer.js"></script>
+  <script src="game.js"></script>
+
+</body>
+</html>
