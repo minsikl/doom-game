@@ -2,16 +2,18 @@
  * renderer.js — Raycasting engine, sprite projection, and minimap.
  *
  * Rendering pipeline each frame:
- *   1. Clear + draw flat ceiling / floor rectangles.
- *   2. Cast one ray per screen column using the DDA algorithm.
- *      • Each ray returns the perpendicular wall distance (fish-eye corrected).
- *      • Draw a vertical wall strip, shaded by distance, into the column.
- *      • Store perpendicular distance in zBuffer[] for sprite occlusion.
- *   3. Sort sprites back-to-front; project each onto screen columns;
- *      skip any column already occluded by a nearer wall (zBuffer check).
- *   4. Draw minimap overlay.
+ *   1. Reset the ImageData pixel buffer to the pre-built ceiling/floor background.
+ *   2. Wall pass — one DDA ray per screen column (_castRay).
+ *      • Returns { perpDist, wallType, side, wallHitX }.
+ *      • wallHitX (0–1) selects the texture column from TEXTURES.
+ *      • Each pixel in the wall strip is written directly into the pixel buffer,
+ *        with distance-based brightness applied per-channel.
+ *      • Perpendicular distance stored in zBuffer[] for sprite occlusion.
+ *   3. ctx.putImageData — flush the pixel buffer to the canvas in one call.
+ *   4. Sprite pass — sorted back-to-front, column-by-column fillRect (on top).
+ *   5. Minimap overlay.
  *
- * Depends on: map.js (MAP), player.js (PLAYER)
+ * Depends on: map.js (MAP), player.js (PLAYER), textures.js (TEXTURES)
  */
 
 const RENDERER = {
@@ -43,12 +45,35 @@ const RENDERER = {
     this.ctx     = canvas.getContext('2d');
     this.zBuffer = new Array(canvas.width).fill(Infinity);
 
-    // Pre-parse wall colours to avoid repeated hex parsing in the hot loop.
-    this._rgbCache = {};
-    for (const [type, pair] of Object.entries(MAP.WALL_COLORS)) {
-      this._rgbCache[pair.ns] = this._parseHex(pair.ns);
-      this._rgbCache[pair.ew] = this._parseHex(pair.ew);
+    // ── Pixel buffer (wall pass writes here; one putImageData per frame) ──────
+    this._imageData = this.ctx.createImageData(canvas.width, canvas.height);
+
+    // Pre-build a background buffer filled with ceiling and floor colours.
+    // Each frame we memcpy this into _imageData before writing wall pixels,
+    // which is faster than two fillRect calls + the canvas state overhead.
+    const W     = canvas.width;
+    const H     = canvas.height;
+    const halfH = H >> 1;
+    this._bgBuffer = new Uint8ClampedArray(W * H * 4);
+
+    const CEIL_R = 0x1e, CEIL_G = 0x1e, CEIL_B = 0x2e;   // #1e1e2e
+    const FLOOR_R = 0x3a, FLOOR_G = 0x32, FLOOR_B = 0x28; // #3a3228
+
+    for (let y = 0; y < H; y++) {
+      const isCeil = y < halfH;
+      const r = isCeil ? CEIL_R  : FLOOR_R;
+      const g = isCeil ? CEIL_G  : FLOOR_G;
+      const b = isCeil ? CEIL_B  : FLOOR_B;
+      const rowStart = y * W * 4;
+      for (let x = 0; x < W; x++) {
+        const i = rowStart + x * 4;
+        this._bgBuffer[i] = r;  this._bgBuffer[i+1] = g;
+        this._bgBuffer[i+2] = b; this._bgBuffer[i+3] = 255;
+      }
     }
+
+    // Colour cache for sprite rendering (sprites still use canvas fillRect).
+    this._rgbCache = {};
   },
 
   // ─── Main render call ───────────────────────────────────────────────────────
@@ -58,48 +83,61 @@ const RENDERER = {
    * @param {Array} sprites  Array of { x, y, type } world-space sprite objects.
    */
   render(sprites) {
-    const { ctx, canvas } = this;
+    const { ctx, canvas, _imageData } = this;
     const W     = canvas.width;
     const H     = canvas.height;
     const halfH = H >> 1;
+    const buf   = _imageData.data;   // Uint8ClampedArray — write wall pixels here
 
-    // ── 1. Ceiling and floor ──────────────────────────────────────────────
-    ctx.fillStyle = '#1e1e2e';   // dark blue-grey ceiling
-    ctx.fillRect(0, 0, W, halfH);
-    ctx.fillStyle = '#3a3228';   // warm dark-brown floor
-    ctx.fillRect(0, halfH, W, halfH);
+    // ── 1. Reset pixel buffer to ceiling / floor background ───────────────
+    // TypedArray.set() is a near-memcpy — far cheaper than canvas fillRect
+    // calls because it bypasses the canvas 2D state machine entirely.
+    buf.set(this._bgBuffer);
 
-    // ── 2. Wall pass ──────────────────────────────────────────────────────
-    // Projection-plane distance: the virtual "screen" sits projDist pixels
-    // in front of the player. Derived from FOV so that a wall one cell away
-    // fills the screen height exactly when CELL_SIZE == canvas height.
+    // ── 2. Wall pass (per-pixel, writes directly into buf) ────────────────
     const halfFOV  = this.FOV / 2;
     const projDist = (W / 2) / Math.tan(halfFOV);
+    const TEX_SIZE = TEXTURES.SIZE;
+    const TEX_MASK = TEX_SIZE - 1;   // TEX_SIZE is 64 (power of 2) → fast clamp
 
     for (let col = 0; col < W; col++) {
-      // Ray angle: linearly distributed across the FOV
       const rayAngle = PLAYER.angle - halfFOV + (col / W) * this.FOV;
       const hit      = this._castRay(rayAngle);
 
-      // Store perpendicular distance for sprite occlusion
       this.zBuffer[col] = hit.perpDist;
 
-      // Projected wall-strip height (pixels)
-      const wallH  = Math.floor(projDist * MAP.CELL_SIZE / hit.perpDist);
-      const wallY0 = Math.floor(halfH - wallH / 2);
+      // Projected wall-strip height and vertical screen bounds
+      const wallH  = (projDist * MAP.CELL_SIZE / hit.perpDist) | 0;
+      const wallY0 = ((halfH - wallH / 2) | 0);
+      const drawY0 = wallY0 < 0 ? 0 : wallY0;
+      const drawY1 = wallY0 + wallH > H ? H : wallY0 + wallH;
 
-      // Pick colour: N/S-facing wall or E/W-facing wall (side==1 is N/S)
-      const colors   = MAP.WALL_COLORS[hit.wallType] || MAP.WALL_COLORS[1];
-      const colorKey = hit.side === 1 ? colors.ns : colors.ew;
+      // Texture column: wallHitX (0–1) → integer texel x in [0, TEX_SIZE)
+      const texX   = (hit.wallHitX * TEX_SIZE) & TEX_MASK;
+      const texBuf = TEXTURES.getBuffer(hit.wallType);
 
-      // Distance-based brightness (1.0 = closest, ~0.1 = far/dark)
-      const shade = Math.max(0.1, 1 - hit.perpDist / this.MAX_SHADE_DIST);
+      // Shade: distance darkens walls; E/W faces (side=0) are dimmer than
+      // N/S faces (side=1) for a free depth cue (no ray-traced lighting).
+      const distShade = Math.max(0.1, 1 - hit.perpDist / this.MAX_SHADE_DIST);
+      const shade     = hit.side === 0 ? distShade * 0.7 : distShade;
 
-      ctx.fillStyle = this._shadedColor(colorKey, shade);
-      ctx.fillRect(col, wallY0, 1, wallH);
+      for (let y = drawY0; y < drawY1; y++) {
+        // Map screen-y to texture-y
+        const texY = (((y - wallY0) / wallH) * TEX_SIZE) & TEX_MASK;
+        const ti   = (texY * TEX_SIZE + texX) * 4;   // index into texBuf
+
+        const idx    = (y * W + col) * 4;             // index into pixel buf
+        buf[idx]     = texBuf[ti]   * shade;
+        buf[idx + 1] = texBuf[ti+1] * shade;
+        buf[idx + 2] = texBuf[ti+2] * shade;
+        buf[idx + 3] = 255;
+      }
     }
 
-    // ── 3. Sprite pass ────────────────────────────────────────────────────
+    // ── 3. Flush pixel buffer to canvas (single call) ─────────────────────
+    ctx.putImageData(_imageData, 0, 0);
+
+    // ── 4. Sprite pass (canvas 2D fillRect, drawn on top of putImageData) ─
     if (sprites && sprites.length > 0) {
       this._renderSprites(sprites, projDist, halfFOV);
     }
@@ -115,11 +153,13 @@ const RENDERER = {
    *   • Always advance the shorter accumulated distance (grid march).
    *   • Record which axis was crossed last → determines wall face (N/S vs E/W).
    *
-   * @returns {{ perpDist: number, wallType: number, side: number }}
-   *   perpDist  – fish-eye-corrected distance to the wall face
+   * @returns {{ perpDist, wallType, side, wallHitX }}
+   *   perpDist  – fish-eye-corrected distance to the wall face (pixels)
    *   wallType  – cell value at the hit cell (1, 2, 3 …)
    *   side      – 0 = E/W face (X boundary crossed last)
    *               1 = N/S face (Y boundary crossed last)
+   *   wallHitX  – fractional hit position along the wall face [0, 1)
+   *               used to index the horizontal texture column
    */
   _castRay(angle) {
     const CS  = MAP.CELL_SIZE;
@@ -181,8 +221,26 @@ const RENDERER = {
     } else {
       perpDist = (mapY - PLAYER.y / CS + (1 - stepY) / 2) / rdy * CS;
     }
+    perpDist = Math.abs(perpDist);
 
-    return { perpDist: Math.abs(perpDist), wallType, side };
+    // ── Texture hit position (wallHitX) ─────────────────────────────────
+    // Compute where exactly along the wall face (0–1) the ray struck.
+    // For a vertical wall (side=0) the varying axis is Y; vice-versa.
+    // Formula (positions in cell units): hitCoord = playerCoord + perpDist * rayDir
+    //
+    // Flip correction: ensures texture orientation is consistent regardless
+    // of which direction the ray travels (prevents mirrored textures).
+    let wallHitX;
+    if (side === 0) {
+      wallHitX = (PLAYER.y / CS + (perpDist / CS) * rdy) % 1;
+      if (rdx > 0) wallHitX = 1 - wallHitX;   // flip for rays going right
+    } else {
+      wallHitX = (PLAYER.x / CS + (perpDist / CS) * rdx) % 1;
+      if (rdy < 0) wallHitX = 1 - wallHitX;   // flip for rays going up
+    }
+    if (wallHitX < 0) wallHitX += 1;           // guard against −0 modulo
+
+    return { perpDist, wallType, side, wallHitX };
   },
 
   // ─── Sprite rendering ───────────────────────────────────────────────────────
