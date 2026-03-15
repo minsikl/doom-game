@@ -19,12 +19,21 @@ const PLAYER = {
   /** Facing direction in radians. 0 = East, PI/2 = South. */
   angle: 0,
 
+  /**
+   * Eye height above the floor in world pixels.
+   * Initialised to the resting default; lerps toward floorHeight + DEFAULT_Z
+   * each frame so the camera smoothly rises and falls on stairs.
+   */
+  z: MAP.CELL_SIZE / 2,
+
   // ─── Tuning constants ───────────────────────────────────────────────────────
 
-  MOVE_SPEED:  150,    // world-units per second (forward / strafe)
-  ROT_SPEED:   2.2,    // radians per second  (keyboard turning)
-  MOUSE_SENS:  0.0025, // radians per pixel   (pointer-lock mouse)
-  COLLISION_R: 10,     // keep this many pixels away from every wall
+  MOVE_SPEED:  150,              // world-units per second (forward / strafe)
+  ROT_SPEED:   2.2,              // radians per second  (keyboard turning)
+  MOUSE_SENS:  0.0025,           // radians per pixel   (pointer-lock mouse)
+  COLLISION_R: 10,               // keep this many pixels away from every wall
+  DEFAULT_Z:   MAP.CELL_SIZE / 2, // resting eye height above the floor (32 px)
+  Z_LERP_SPD:  8,                // convergence speed for eye-height lerp (1/s)
 
   // ─── Internal ───────────────────────────────────────────────────────────────
 
@@ -93,11 +102,23 @@ const PLAYER = {
     // ── Collision (separate X / Y passes for wall-sliding) ─────────────────
     const r = this.COLLISION_R;
 
-    if (!MAP.isWall(this.x + dx + Math.sign(dx) * r, this.y))
+    // X axis: block movement into walls OR steps that are too tall to climb.
+    const probeX = this.x + dx + Math.sign(dx) * r;
+    if (!MAP.isWall(probeX, this.y) &&
+         MAP.canStep(this.x, this.y, probeX, this.y))
       this.x += dx;
 
-    if (!MAP.isWall(this.x, this.y + dy + Math.sign(dy) * r))
+    // Y axis: same rule.
+    const probeY = this.y + dy + Math.sign(dy) * r;
+    if (!MAP.isWall(this.x, probeY) &&
+         MAP.canStep(this.x, this.y, this.x, probeY))
       this.y += dy;
+
+    // ── Eye-height lerp (smooth step-up / step-down) ────────────────────────
+    // z converges toward the floor elevation of the current cell + DEFAULT_Z.
+    // Z_LERP_SPD controls snappiness: higher = faster transition.
+    const targetZ = MAP.getFloorHeight(this.x, this.y) + this.DEFAULT_Z;
+    this.z += (targetZ - this.z) * Math.min(1, this.Z_LERP_SPD * dt);
 
     // Keep angle in [0, 2π]
     this.angle = ((this.angle % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2);
