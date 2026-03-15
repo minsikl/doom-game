@@ -153,12 +153,43 @@ const TEXTURES = (() => {
     return buf;
   }
 
+  // ─── Generator: Stair face (wall type 4) ────────────────────────────────────
+  /**
+   * Sandy golden stone with dark horizontal grooves every 16 px, suggesting
+   * individual step risers when the face is rendered at step height.
+   */
+  function generateStair() {
+    const buf  = new Uint8ClampedArray(SIZE * SIZE * 4);
+    const BAND = 16;   // matches STEP_HEIGHT — one groove per stair step
+
+    for (let y = 0; y < SIZE; y++) {
+      for (let x = 0; x < SIZE; x++) {
+        const isGroove = y % BAND < 2;
+        const micro    = noise(x, y) * 24 - 12;
+        let r, g, b;
+
+        if (isGroove) {
+          r = 90;  g = 64;  b = 24;   // dark groove between steps
+        } else {
+          r = clamp(192 + micro, 140, 240);
+          g = clamp(148 + micro, 100, 190);
+          b = clamp( 52 + micro,  20,  88);
+        }
+
+        const i = (y * SIZE + x) * 4;
+        buf[i] = r;  buf[i+1] = g;  buf[i+2] = b;  buf[i+3] = 255;
+      }
+    }
+    return buf;
+  }
+
   // ─── Build lookup table at load time ────────────────────────────────────────
 
   const _buffers = {
     1: generateStone(),
     2: generateBrick(),
     3: generateMetal(),
+    4: generateStair(),
   };
 
   // ─── Public API ─────────────────────────────────────────────────────────────
