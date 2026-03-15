@@ -130,9 +130,18 @@ const RENDERER = {
 
       this.zBuffer[col] = hit.perpDist;
 
-      // Projected wall-strip height and vertical screen bounds
-      const wallH  = (projDist * MAP.CELL_SIZE / hit.perpDist) | 0;
-      const wallY0 = ((horizonY - wallH / 2) | 0);  // centred on horizon
+      // Projected wall-strip height and vertical screen bounds.
+      // For stair faces (type 4) we project only the riser height and place it
+      // at the correct world elevation rather than centering on the horizon.
+      let wallH, wallY0;
+      if (hit.wallType === 4) {
+        const pxPerWorld = projDist / hit.perpDist;
+        wallH  = (hit.stairFaceH * pxPerWorld) | 0;
+        wallY0 = (horizonY + (PLAYER.z - (hit.stairFaceBase + hit.stairFaceH)) * pxPerWorld) | 0;
+      } else {
+        wallH  = (projDist * MAP.CELL_SIZE / hit.perpDist) | 0;
+        wallY0 = ((horizonY - wallH / 2) | 0);   // centred on horizon
+      }
       const drawY0 = wallY0 < 0 ? 0 : wallY0;
       const drawY1 = wallY0 + wallH > H ? H : wallY0 + wallH;
 
@@ -220,6 +229,12 @@ const RENDERER = {
     // March through the grid until a non-empty cell is found
     let side     = 0;  // last axis crossed
     let wallType = 0;
+    let stairFaceH    = 0;  // height of stair riser face (px) — set on stair hit
+    let stairFaceBase = 0;  // world-height of the bottom of the stair face
+
+    // Track previous cell so we can detect floor-height transitions (stair faces)
+    let prevCellX = mapX;
+    let prevCellY = mapY;
 
     for (let i = 0; i < 128; i++) {
       // Advance to the nearer boundary
@@ -235,6 +250,20 @@ const RENDERER = {
 
       wallType = MAP.getCell(mapX, mapY);
       if (wallType !== 0) break;
+
+      // Stair-face detection: when the floor height changes between two open
+      // cells, the vertical step face between them is rendered as wall type 4.
+      const prevFloor = MAP.getFloorHeight((prevCellX + 0.5) * CS, (prevCellY + 0.5) * CS);
+      const currFloor = MAP.getFloorHeight((mapX      + 0.5) * CS, (mapY      + 0.5) * CS);
+      if (currFloor !== prevFloor) {
+        wallType      = 4;
+        stairFaceBase = Math.min(prevFloor, currFloor);
+        stairFaceH    = Math.abs(currFloor - prevFloor);
+        break;
+      }
+
+      prevCellX = mapX;
+      prevCellY = mapY;
     }
 
     // Perpendicular distance to the wall face (avoids fish-eye distortion).
@@ -264,7 +293,7 @@ const RENDERER = {
     }
     if (wallHitX < 0) wallHitX += 1;           // guard against −0 modulo
 
-    return { perpDist, wallType, side, wallHitX };
+    return { perpDist, wallType, side, wallHitX, stairFaceH, stairFaceBase };
   },
 
   // ─── Sprite rendering ───────────────────────────────────────────────────────
@@ -409,6 +438,23 @@ const RENDERER = {
         const cell = MAP.getCell(col, row);
         if (cell === 0) continue;
         ctx.fillStyle = (MAP.WALL_COLORS[cell] || MAP.WALL_COLORS[1]).ns;
+        ctx.fillRect(
+          originX + col * SCALE,
+          originY + row * SCALE,
+          SCALE - 1,
+          SCALE - 1
+        );
+      }
+    }
+
+    // Elevated floor cells (stairs) — golden tint, brighter for higher steps
+    for (let row = 0; row < MAP.height(); row++) {
+      for (let col = 0; col < MAP.width(); col++) {
+        if (MAP.getCell(col, row) !== 0) continue;  // walls already drawn above
+        const h = MAP.heightGrid[row][col];
+        if (h === 0) continue;
+        const t = h / 3;   // normalise: max height level is 3
+        ctx.fillStyle = `rgb(${Math.floor(160 + t * 70)},${Math.floor(130 - t * 50)},20)`;
         ctx.fillRect(
           originX + col * SCALE,
           originY + row * SCALE,
