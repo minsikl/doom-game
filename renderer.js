@@ -89,14 +89,38 @@ const RENDERER = {
     const halfH = H >> 1;
     const buf   = _imageData.data;   // Uint8ClampedArray — write wall pixels here
 
+    // ── Horizon shift ──────────────────────────────────────────────────────
+    // When PLAYER.z differs from the resting eye height, the horizon (the
+    // ceiling/floor boundary) shifts vertically so the camera appears to rise
+    // or fall.  Formula: pitchOffset = elevation × projDist / CELL_SIZE.
+    //   horizonY < halfH  → player is elevated (more floor visible below)
+    //   horizonY > halfH  → player is lower than default (more ceiling)
+    const halfFOV     = this.FOV / 2;
+    const projDist    = (W / 2) / Math.tan(halfFOV);
+    const DEFAULT_Z   = MAP.CELL_SIZE / 2;
+    const pitchOffset = ((PLAYER.z - DEFAULT_Z) * projDist / MAP.CELL_SIZE) | 0;
+    const horizonY    = halfH - pitchOffset;
+
     // ── 1. Reset pixel buffer to ceiling / floor background ───────────────
-    // TypedArray.set() is a near-memcpy — far cheaper than canvas fillRect
-    // calls because it bypasses the canvas 2D state machine entirely.
-    buf.set(this._bgBuffer);
+    // Fast path when the horizon is centred: TypedArray.set() is a memcpy.
+    // When the player is elevated/lowered we fill the buffer directly,
+    // splitting at horizonY instead of halfH.
+    if (pitchOffset === 0) {
+      buf.set(this._bgBuffer);
+    } else {
+      const CEIL_R  = 0x1e, CEIL_G  = 0x1e, CEIL_B  = 0x2e;
+      const FLOOR_R = 0x3a, FLOOR_G = 0x32, FLOOR_B = 0x28;
+      const split   = Math.max(0, Math.min(H, horizonY)) * W * 4;
+      const total   = W * H * 4;
+      for (let i = 0; i < split; ) {
+        buf[i++] = CEIL_R;  buf[i++] = CEIL_G;  buf[i++] = CEIL_B;  buf[i++] = 255;
+      }
+      for (let i = split; i < total; ) {
+        buf[i++] = FLOOR_R; buf[i++] = FLOOR_G; buf[i++] = FLOOR_B; buf[i++] = 255;
+      }
+    }
 
     // ── 2. Wall pass (per-pixel, writes directly into buf) ────────────────
-    const halfFOV  = this.FOV / 2;
-    const projDist = (W / 2) / Math.tan(halfFOV);
     const TEX_SIZE = TEXTURES.SIZE;
     const TEX_MASK = TEX_SIZE - 1;   // TEX_SIZE is 64 (power of 2) → fast clamp
 
@@ -108,7 +132,7 @@ const RENDERER = {
 
       // Projected wall-strip height and vertical screen bounds
       const wallH  = (projDist * MAP.CELL_SIZE / hit.perpDist) | 0;
-      const wallY0 = ((halfH - wallH / 2) | 0);
+      const wallY0 = ((horizonY - wallH / 2) | 0);  // centred on horizon
       const drawY0 = wallY0 < 0 ? 0 : wallY0;
       const drawY1 = wallY0 + wallH > H ? H : wallY0 + wallH;
 
@@ -139,7 +163,7 @@ const RENDERER = {
 
     // ── 4. Sprite pass (canvas 2D fillRect, drawn on top of putImageData) ─
     if (sprites && sprites.length > 0) {
-      this._renderSprites(sprites, projDist, halfFOV);
+      this._renderSprites(sprites, projDist, halfFOV, horizonY);
     }
   },
 
@@ -250,12 +274,11 @@ const RENDERER = {
    * Each sprite is drawn column-by-column; a column is skipped if the zBuffer
    * shows a wall is closer.
    */
-  _renderSprites(sprites, projDist, halfFOV) {
+  _renderSprites(sprites, projDist, halfFOV, horizonY) {
     const { ctx, canvas, zBuffer } = this;
     const W     = canvas.width;
     const H     = canvas.height;
     const halfW = W / 2;
-    const halfH = H / 2;
 
     // Compute Euclidean distance to each sprite, then sort farthest-first
     const sorted = sprites
@@ -291,7 +314,7 @@ const RENDERER = {
       const spriteH = Math.floor(projDist * MAP.CELL_SIZE / sprite.dist);
       const spriteW = spriteH;   // square sprites
 
-      const drawY0 = Math.floor(halfH - spriteH / 2);
+      const drawY0 = Math.floor(horizonY - spriteH / 2);
       const drawX0 = Math.floor(screenCX - spriteW / 2);
 
       // Distance-based shading (match the wall shading feel)

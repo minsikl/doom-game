@@ -45,6 +45,12 @@ const MAP = {
   CELL_SIZE: 64,
 
   /**
+   * Maximum height change the player can climb or descend in one step.
+   * Equal to ¼ of a cell (16 px).  A step taller than this blocks movement.
+   */
+  STEP_HEIGHT: 16,
+
+  /**
    * Wall colours per type.
    * Two shades per type: N/S-facing walls (lighter) and E/W-facing walls
    * (darker) give a free depth cue without any lighting math.
@@ -54,6 +60,23 @@ const MAP = {
     2: { ns: '#8B4513', ew: '#5C2D0B' },  // brick
     3: { ns: '#4682B4', ew: '#2E5A82' },  // metal
   },
+
+  // ─── Height grid ────────────────────────────────────────────────────────────
+
+  /**
+   * Per-cell floor elevations, expressed as integer multiples of STEP_HEIGHT.
+   * Most cells are 0 (ground level).  The staircase occupies rows 9–11 of
+   * columns 6–10, rising and falling: [1, 2, 3, 3, 2] × STEP_HEIGHT px.
+   */
+  heightGrid: (() => {
+    const g       = Array.from({ length: 24 }, () => new Array(24).fill(0));
+    const COLS    = [6, 7, 8, 9, 10];
+    const HEIGHTS = [1, 2, 3, 3,  2];
+    for (const row of [9, 10, 11]) {
+      for (let i = 0; i < COLS.length; i++) g[row][COLS[i]] = HEIGHTS[i];
+    }
+    return g;
+  })(),
 
   // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -78,5 +101,25 @@ const MAP = {
       Math.floor(wx / this.CELL_SIZE),
       Math.floor(wy / this.CELL_SIZE)
     ) !== 0;
+  },
+
+  /**
+   * Return the floor elevation (world pixels) at world-space point (wx, wy).
+   * Out-of-bounds coordinates return 0 (ground level).
+   */
+  getFloorHeight(wx, wy) {
+    const cx = Math.floor(wx / this.CELL_SIZE);
+    const cy = Math.floor(wy / this.CELL_SIZE);
+    if (cx < 0 || cx >= this.width() || cy < 0 || cy >= this.height()) return 0;
+    return this.heightGrid[cy][cx] * this.STEP_HEIGHT;
+  },
+
+  /**
+   * Return true if the player can step from (fromWX, fromWY) to (toWX, toWY).
+   * Movement is blocked when the height difference exceeds one STEP_HEIGHT.
+   */
+  canStep(fromWX, fromWY, toWX, toWY) {
+    return Math.abs(this.getFloorHeight(toWX,   toWY) -
+                    this.getFloorHeight(fromWX, fromWY)) <= this.STEP_HEIGHT;
   },
 };

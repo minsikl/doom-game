@@ -23,10 +23,10 @@ map.js  →  textures.js  →  player.js  →  renderer.js  →  game.js
 
 | File | Responsibility |
 |------|---------------|
-| `map.js` | `MAP` object: 24×24 grid, `CELL_SIZE`, `WALL_COLORS`, `getCell()`, `isWall()` |
+| `map.js` | `MAP` object: 24×24 grid, `CELL_SIZE`, `STEP_HEIGHT`, `heightGrid`, `WALL_COLORS`, `getCell()`, `isWall()`, `getFloorHeight()`, `canStep()` |
 | `textures.js` | `TEXTURES` object: procedural 64×64 RGBA buffers for stone, brick, metal; `getBuffer(type)` |
-| `player.js` | `PLAYER` object: position, angle, WASD + arrow + mouse-look input, per-frame `update(dt)` with axis-split collision |
-| `renderer.js` | `RENDERER` object: DDA raycasting, ImageData pixel buffer, sprite projection, minimap |
+| `player.js` | `PLAYER` object: position, angle, `z` (eye height), WASD + arrow + mouse-look input, per-frame `update(dt)` with axis-split step-aware collision + z-lerp |
+| `renderer.js` | `RENDERER` object: DDA raycasting, ImageData pixel buffer, `horizonY` shift for height system, sprite projection, minimap |
 | `game.js` | `GAME` object: canvas sizing, `requestAnimationFrame` loop, sprite list, FPS counter, crosshair HUD |
 
 All module objects are plain `const` globals — no ES modules, no bundler.
@@ -35,7 +35,7 @@ All module objects are plain `const` globals — no ES modules, no bundler.
 
 `RENDERER.render(sprites)` is called once per frame:
 
-1. **Background reset** — `buf.set(_bgBuffer)` copies the pre-built ceiling/floor pixel data into the `ImageData` buffer in one shot (faster than `fillRect` because it bypasses canvas state).
+1. **Background reset** — when `PLAYER.z === DEFAULT_Z`, `buf.set(_bgBuffer)` copies the pre-built ceiling/floor pixel data in one shot. When the player is elevated or lowered, the buffer is filled directly with ceiling above `horizonY` and floor below it (shifted split).
 2. **Wall pass** — one DDA ray per screen column (`_castRay`). Returns `{ perpDist, wallType, side, wallHitX }`. Wall-strip height = `projDist * CELL_SIZE / perpDist`. Each pixel in the strip is written directly into the `ImageData` buffer: `buf[idx] = texBuf[ti] * shade`. Perpendicular distance stored in `zBuffer[]`.
 3. **`ctx.putImageData`** — flushes the entire pixel buffer to the canvas in one call.
 4. **Sprite pass** — `_renderSprites` sorts sprites back-to-front, projects each to screen X with `tan(relAngle) * projDist`, then draws column-by-column with `fillRect` checking `zBuffer[]` for occlusion.
@@ -47,15 +47,20 @@ All module objects are plain `const` globals — no ES modules, no bundler.
 
 **Wall shading**: E/W faces (`side=0`) are multiplied by 0.7 relative to N/S faces for a free depth cue. Distance-based brightness is applied on top: `shade = max(0.1, 1 − dist / MAX_SHADE_DIST)`.
 
+**Height system**: `pitchOffset = (PLAYER.z − DEFAULT_Z) × projDist / CELL_SIZE`. `horizonY = halfH − pitchOffset`. Wall strips are centred on `horizonY` instead of `halfH`. When the player climbs stairs, `PLAYER.z` lerps toward `floorHeight + DEFAULT_Z`, causing the horizon to rise smoothly.
+
 ## Coordinate system
 
 - `+X` → East, `+Y` → South (matches canvas 2D).
 - `angle = 0` faces East; angles increase clockwise.
 - World positions are in pixels; each map cell is `MAP.CELL_SIZE` (64) pixels wide.
+- `PLAYER.z` is the eye height above the **floor** in world pixels; default is `CELL_SIZE / 2` (32 px).
 
 ## Extending the game
 
 **Add a new wall type**: add an entry to `MAP.WALL_COLORS` and use the new integer in `MAP.grid`.
+
+**Raise a cell's floor**: set `MAP.heightGrid[row][col]` to a positive integer (multiples of `STEP_HEIGHT`). Adjacent cells differing by more than one step are impassable cliffs.
 
 **Add a new wall texture**: add a generator function in `textures.js` and register it in `_buffers` under a new integer key. Use the same integer in `MAP.WALL_COLORS` and `MAP.grid`.
 
